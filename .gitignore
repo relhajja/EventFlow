@@ -1,0 +1,251 @@
+# ============================================
+# EventFlow - Comprehensive .gitignore
+# ============================================
+
+# ============================================
+# Go
+# ============================================
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.*
+*.coverprofile
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Go build cache
+.cache/
+
+# ============================================
+# Node.js / Frontend
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build outputs
+dist/
+dist-ssr/
+build/
+.next/
+out/
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ============================================
+# Docker
+# ============================================
+# Don't ignore Dockerfiles but ignore build artifacts
+.dockerignore
+
+# ============================================
+# Kubernetes
+# ============================================
+# Secrets and sensitive configs
+*-secret.yaml
+secrets/
+*.key
+*.crt
+*.pem
+
+# Kubeconfig
+kubeconfig
+*.kubeconfig
+
+# Helm charts dependencies
+charts/
+*.tgz
+
+# Kind cluster config (keep the template)
+# kind-config.yaml is kept intentionally
+
+# ============================================
+# IDEs and Editors
+# ============================================
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains IDEs (GoLand, WebStorm, IntelliJ IDEA)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Vim
+*.swp
+*.swo
+*~
+.*.sw?
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+
+# ============================================
+# OS Specific
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================
+# Temporary and Build Files
+# ============================================
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Compiled files
+*.com
+*.class
+*.o
+*.pyc
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# ============================================
+# Database
+# ============================================
+# PostgreSQL
+*.sql.backup
+*.dump
+
+# SQLite
+*.sqlite
+*.sqlite3
+*.db
+
+# SQL files (except migrations and schema templates)
+*.sql
+!migrations/*.sql
+!db/migrations/*.sql
+!**/migrations/*.sql
+!schema.sql
+!init.sql.example
+
+# ============================================
+# EventFlow Specific
+# ============================================
+# Old/archived documentation
+*-OLD.md
+*-old.md
+*.backup
+
+# Operator build artifacts
+eventflow/operator/bin/
+eventflow/operator/testbin/
+eventflow/operator/cover.out
+
+# Kind cluster state (if any local caching)
+.kind/
+
+# NATS data (if running locally)
+nats-data/
+jetstream/
+
+# Function deployment artifacts
+functions/*/build/
+functions/*/dist/
+
+# Logs from services
+eventflow/api/*.log
+eventflow/dispatcher/*.log
+eventflow/web/*.log
+
+# Kubernetes dashboard token (keep the file but ignore sensitive copies)
+# k8s-dashboard-token.txt is kept intentionally for local dev
+
+# Development database files
+*.db-journal
+
+# Air live reload (if used)
+.air.toml
+tmp/
+
+# Test outputs
+test-results/
+e2e-results/
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# ============================================
+# Don't Ignore (Explicitly Keep)
+# ============================================
+!.gitkeep
+!.dockerignore
+!*/Dockerfile
+!*/Makefile
+!kind-config.yaml
+!k8s-dashboard-token.txt

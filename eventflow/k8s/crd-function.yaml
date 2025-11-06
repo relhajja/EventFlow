@@ -1,0 +1,111 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: functions.eventflow.io
+spec:
+  group: eventflow.io
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  description: Container image for the function
+                command:
+                  type: array
+                  items:
+                    type: string
+                  description: Command to run in the container
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Environment variables
+                replicas:
+                  type: integer
+                  default: 1
+                  minimum: 0
+                  maximum: 10
+                  description: Number of replicas
+                resources:
+                  type: object
+                  properties:
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                        memory:
+                          type: string
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                        memory:
+                          type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: Current phase (Pending, Running, Failed, Succeeded)
+                replicas:
+                  type: integer
+                  description: Current number of replicas
+                availableReplicas:
+                  type: integer
+                  description: Number of available replicas
+                lastUpdated:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Image
+          type: string
+          jsonPath: .spec.image
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Available
+          type: integer
+          jsonPath: .status.availableReplicas
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+  scope: Namespaced
+  names:
+    plural: functions
+    singular: function
+    kind: Function
+    shortNames:
+      - fn

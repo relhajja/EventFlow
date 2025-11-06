@@ -1,0 +1,36 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: eventflow
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # EventFlow API (using NodePort 30080 in cluster, exposed on host 8081)
+      - containerPort: 30080
+        hostPort: 8081
+        protocol: TCP
+      # EventFlow Web (using NodePort 30300 in cluster, exposed on host 3001)
+      - containerPort: 30300
+        hostPort: 3001
+        protocol: TCP
+      # Metrics (using NodePort 30090 in cluster, exposed on host 9091)
+      - containerPort: 30090
+        hostPort: 9091
+        protocol: TCP
+      # NATS Client (using NodePort 30422 in cluster, exposed on host 4222)
+      - containerPort: 30422
+        hostPort: 4222
+        protocol: TCP
+      # NATS Monitoring (using NodePort 30822 in cluster, exposed on host 8222)
+      - containerPort: 30822
+        hostPort: 8222
+        protocol: TCP
+      # NATS UI (using NodePort 30888 in cluster, exposed on host 8888)
+      - containerPort: 30888
+        hostPort: 8888
+        protocol: TCP

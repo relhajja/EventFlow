@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: eventflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: eventflow
+data:
+  init.sql: |
+    -- EventFlow Database Schema
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+    CREATE TABLE IF NOT EXISTS functions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name VARCHAR(255) UNIQUE NOT NULL,
+        image VARCHAR(500) NOT NULL,
+        replicas INT NOT NULL DEFAULT 1,
+        command TEXT[],
+        env JSONB,
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        deleted_at TIMESTAMP WITH TIME ZONE,
+        
+        CONSTRAINT name_format CHECK (name ~ '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'),
+        CONSTRAINT replicas_positive CHECK (replicas > 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS invocations (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        function_id UUID NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
+        event_id VARCHAR(255),
+        event_type VARCHAR(100) NOT NULL,
+        payload JSONB,
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        completed_at TIMESTAMP WITH TIME ZONE,
+        error TEXT,
+        duration_ms INT,
+        
+        CONSTRAINT status_valid CHECK (status IN ('pending', 'running', 'completed', 'failed'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
+    CREATE INDEX IF NOT EXISTS idx_functions_deleted_at ON functions(deleted_at);
+    CREATE INDEX IF NOT EXISTS idx_invocations_function_id ON invocations(function_id);
+    CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
+    CREATE INDEX IF NOT EXISTS idx_invocations_started_at ON invocations(started_at DESC);
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: eventflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - name: POSTGRES_DB
+          value: eventflow
+        - name: POSTGRES_USER
+          value: eventflow
+        - name: POSTGRES_PASSWORD
+          value: eventflow123
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-script
+        configMap:
+          name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: eventflow
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP

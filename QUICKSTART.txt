@@ -1,0 +1,49 @@
+========================================
+  RIADCLOUD - DOCKER TEST SETUP
+========================================
+
+PROJECT CLEANED AND READY TO TEST!
+
+ESSENTIAL FILES:
+- Makefile            # Build commands
+- docker-compose.yml  # Service orchestration  
+- Dockerfile          # Backend container
+- main.go             # Go backend API
+- index.html          # Frontend UI
+- init.sql            # Database schema
+- README.md           # Documentation
+
+QUICK START:
+------------
+1. make up      # Start all services in Docker
+2. make test    # Verify everything works
+3. make down    # Stop when done
+
+WHAT RUNS:
+----------
+✓ Go Backend (localhost:8080)
+✓ PostgreSQL Database (localhost:5432)
+✓ Redis Cache (localhost:6379)
+✓ Adminer UI (localhost:8081)
+
+TEST IT:
+--------
+$ make up
+🚀 Starting all services...
+✅ Running!
+
+$ make test
+🧪 Testing endpoints...
+Hello, Go Web ! I'am Riad
+ count: 8
+
+$ make down
+Stopped
+
+CLEAN UP:
+---------
+$ make clean    # Remove all containers/volumes
+
+That's it! Everything runs in Docker.
+No local dependencies needed except Docker.
+========================================

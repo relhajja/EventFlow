@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eventflow-operator
+  namespace: eventflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eventflow-operator
+  template:
+    metadata:
+      labels:
+        app: eventflow-operator
+    spec:
+      serviceAccountName: eventflow-operator
+      containers:
+      - name: operator
+        image: eventflow-operator:latest
+        imagePullPolicy: Never
+        command: ["./operator"]
+        args:
+        - --namespace=eventflow
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"

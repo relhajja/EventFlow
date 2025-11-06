@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eventflow-dispatcher
+  namespace: eventflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eventflow-dispatcher
+  template:
+    metadata:
+      labels:
+        app: eventflow-dispatcher
+    spec:
+      serviceAccountName: eventflow-api
+      containers:
+      - name: dispatcher
+        image: eventflow-dispatcher:latest
+        imagePullPolicy: Never
+        env:
+        - name: NATS_URL
+          value: "nats://nats:4222"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"

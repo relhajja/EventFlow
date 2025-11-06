@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-ui
+  namespace: eventflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats-ui
+  template:
+    metadata:
+      labels:
+        app: nats-ui
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: nats-ui-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-ui-html
+  namespace: eventflow
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>NATS Monitoring</title>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #333; }
+        .card { background: white; padding: 20px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        pre { background: #f8f8f8; padding: 15px; border-radius: 3px; overflow-x: auto; }
+        button { background: #27aae1; color: white; border: none; padding: 10px 20px; border-radius: 3px; cursor: pointer; }
+        button:hover { background: #1a8ec2; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>🚀 NATS Monitoring Dashboard</h1>
+        
+        <div class="card">
+          <h2>Server Information</h2>
+          <button onclick="fetchVarz()">Refresh Server Stats</button>
+          <pre id="varz">Click refresh to load server stats...</pre>
+        </div>
+
+        <div class="card">
+          <h2>Connections</h2>
+          <button onclick="fetchConnz()">Refresh Connections</button>
+          <pre id="connz">Click refresh to load connections...</pre>
+        </div>
+
+        <div class="card">
+          <h2>Subscriptions</h2>
+          <button onclick="fetchSubsz()">Refresh Subscriptions</button>
+          <pre id="subsz">Click refresh to load subscriptions...</pre>
+        </div>
+
+        <div class="card">
+          <h2>Routes</h2>
+          <button onclick="fetchRoutez()">Refresh Routes</button>
+          <pre id="routez">Click refresh to load routes...</pre>
+        </div>
+      </div>
+
+      <script>
+        const NATS_MONITOR = 'http://nats.eventflow.svc.cluster.local:8222';
+
+        async function fetchEndpoint(endpoint, elementId) {
+          try {
+            const response = await fetch(`${NATS_MONITOR}/${endpoint}`);
+            const data = await response.json();
+            document.getElementById(elementId).textContent = JSON.stringify(data, null, 2);
+          } catch (error) {
+            document.getElementById(elementId).textContent = 'Error: ' + error.message;
+          }
+        }
+
+        function fetchVarz() { fetchEndpoint('varz', 'varz'); }
+        function fetchConnz() { fetchEndpoint('connz', 'connz'); }
+        function fetchSubsz() { fetchEndpoint('subsz', 'subsz'); }
+        function fetchRoutez() { fetchEndpoint('routez', 'routez'); }
+
+        // Auto-load stats on page load
+        fetchVarz();
+      </script>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-ui
+  namespace: eventflow
+spec:
+  selector:
+    app: nats-ui
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30888
+    name: http
+  type: NodePort
