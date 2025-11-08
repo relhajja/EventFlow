@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -216,15 +217,23 @@ func (r *FunctionReconciler) buildDeployment(function *eventflowv1alpha1.Functio
 		container.Args = function.Spec.Args
 	}
 
-	// Add resource limits if specified
+	// Add resource requirements (required by tenant resource quotas)
+	// Set default values if not specified
+	container.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+
+	// Override with custom resources if specified
 	if function.Spec.Resources != nil {
-		resources := corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{},
-			Limits:   corev1.ResourceList{},
-		}
 		// Note: For simplicity, we're not parsing the resource strings yet
-		// In production, you'd parse strings like "100m" and "128Mi"
-		container.Resources = resources
+		// In production, you'd parse strings like "100m" and "128Mi" from function.Spec.Resources
 	}
 
 	// Get desired replicas (default to 1 if not set)

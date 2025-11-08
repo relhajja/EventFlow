@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eventflow/api/internal/auth"
 	"github.com/eventflow/api/internal/database"
 	"github.com/eventflow/api/internal/events"
 	"github.com/eventflow/api/internal/k8s"
@@ -31,6 +32,13 @@ func NewFunctionHandler(k8sClient *k8s.Client, publisher *events.Publisher, func
 
 // CreateFunction handles POST /v1/functions
 func (h *FunctionHandler) CreateFunction(w http.ResponseWriter, r *http.Request) {
+	// Extract user from JWT token
+	claims, ok := auth.GetUserFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "user not authenticated", nil)
+		return
+	}
+
 	var req models.CreateFunctionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body", err)
@@ -43,38 +51,42 @@ func (h *FunctionHandler) CreateFunction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Auto-generate namespace from user ID
+	req.Namespace = claims.Namespace // tenant-{userID}
+
 	if req.Replicas == 0 {
 		req.Replicas = 1
 	}
 
+	// Ensure tenant namespace exists
+	if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
+		if err := h.k8sClient.EnsureNamespace(r.Context(), req.Namespace); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to create tenant namespace", err)
+			return
+		}
+	}
+
 	// Save to database first
-	function, err := h.functionRepo.Create(r.Context(), req.Name, req.Image, req.Replicas, req.Env, req.Command)
+	function, err := h.functionRepo.Create(r.Context(), claims.UserID, req.Name, req.Namespace, req.Image, req.Replicas, req.Env, req.Command)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create function in database", err)
 		return
 	}
 
-	// Create deployment in Kubernetes if available
+	// Create Function CR in Kubernetes if available
 	if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
-		err = h.k8sClient.CreateDeployment(
-			r.Context(),
-			req.Name,
-			req.Image,
-			req.Replicas,
-			req.Env,
-			req.Command,
-		)
+		err = h.k8sClient.CreateFunctionCR(r.Context(), req)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to create function in Kubernetes", err)
 			return
 		}
-
-		metrics.ActiveFunctions.WithLabelValues(h.k8sClient.GetNamespace()).Inc()
+		metrics.ActiveFunctions.WithLabelValues(req.Namespace).Inc()
 	}
 
 	// Return as FunctionStatus
 	status := models.FunctionStatus{
 		Name:              function.Name,
+		Namespace:         function.Namespace,
 		Image:             function.Image,
 		Replicas:          function.Replicas,
 		AvailableReplicas: 0,
@@ -89,8 +101,15 @@ func (h *FunctionHandler) CreateFunction(w http.ResponseWriter, r *http.Request)
 
 // ListFunctions handles GET /v1/functions
 func (h *FunctionHandler) ListFunctions(w http.ResponseWriter, r *http.Request) {
-	// Get functions from database
-	functions, err := h.functionRepo.List(r.Context())
+	// Extract user from JWT token
+	claims, ok := auth.GetUserFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "user not authenticated", nil)
+		return
+	}
+
+	// Get functions from database (scoped to user)
+	functions, err := h.functionRepo.List(r.Context(), claims.UserID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to list functions", err)
 		return
@@ -103,6 +122,7 @@ func (h *FunctionHandler) ListFunctions(w http.ResponseWriter, r *http.Request) 
 		for _, fn := range functions {
 			status := models.FunctionStatus{
 				Name:              fn.Name,
+				Namespace:         fn.Namespace,
 				Image:             fn.Image,
 				Replicas:          fn.Replicas,
 				AvailableReplicas: 0,
@@ -113,7 +133,7 @@ func (h *FunctionHandler) ListFunctions(w http.ResponseWriter, r *http.Request) 
 			}
 
 			// Try to get deployment status from Kubernetes
-			deployment, err := h.k8sClient.GetDeployment(r.Context(), fn.Name)
+			deployment, err := h.k8sClient.GetDeployment(r.Context(), fn.Namespace, fn.Name)
 			if err == nil && deployment != nil {
 				status.AvailableReplicas = deployment.Status.AvailableReplicas
 				status.ReadyReplicas = deployment.Status.ReadyReplicas
@@ -154,10 +174,17 @@ func (h *FunctionHandler) ListFunctions(w http.ResponseWriter, r *http.Request) 
 
 // GetFunction handles GET /v1/functions/{name}
 func (h *FunctionHandler) GetFunction(w http.ResponseWriter, r *http.Request) {
+	// Extract user from JWT token
+	claims, ok := auth.GetUserFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "user not authenticated", nil)
+		return
+	}
+
 	name := chi.URLParam(r, "name")
 
-	// Get from database
-	function, err := h.functionRepo.Get(r.Context(), name)
+	// Get from database (scoped to user and their namespace)
+	function, err := h.functionRepo.Get(r.Context(), claims.UserID, name, claims.Namespace)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "function not found", err)
 		return
@@ -167,6 +194,7 @@ func (h *FunctionHandler) GetFunction(w http.ResponseWriter, r *http.Request) {
 	if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
 		status := models.FunctionStatus{
 			Name:              function.Name,
+			Namespace:         function.Namespace,
 			Image:             function.Image,
 			Replicas:          function.Replicas,
 			AvailableReplicas: 0,
@@ -177,7 +205,7 @@ func (h *FunctionHandler) GetFunction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Try to get deployment status from Kubernetes
-		deployment, err := h.k8sClient.GetDeployment(r.Context(), name)
+		deployment, err := h.k8sClient.GetDeployment(r.Context(), function.Namespace, name)
 		if err == nil && deployment != nil {
 			status.AvailableReplicas = deployment.Status.AvailableReplicas
 			status.ReadyReplicas = deployment.Status.ReadyReplicas
@@ -212,6 +240,13 @@ func (h *FunctionHandler) GetFunction(w http.ResponseWriter, r *http.Request) {
 
 // InvokeFunction handles POST /v1/functions/{name}:invoke
 func (h *FunctionHandler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
+	// Extract user from JWT token
+	claims, ok := auth.GetUserFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "user not authenticated", nil)
+		return
+	}
+
 	name := chi.URLParam(r, "name")
 
 	// Parse event payload
@@ -224,8 +259,8 @@ func (h *FunctionHandler) InvokeFunction(w http.ResponseWriter, r *http.Request)
 	start := time.Now()
 	eventID := fmt.Sprintf("inv-%d", time.Now().UnixNano())
 
-	// Check if function exists in database
-	function, err := h.functionRepo.Get(r.Context(), name)
+	// Check if function exists in database (scoped to user)
+	function, err := h.functionRepo.Get(r.Context(), claims.UserID, name, claims.Namespace)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "function not found", err)
 		return
@@ -242,7 +277,7 @@ func (h *FunctionHandler) InvokeFunction(w http.ResponseWriter, r *http.Request)
 		// Record invocation in database
 		_ = h.functionRepo.RecordInvocation(r.Context(), name, eventID, "http.invoke", req.Payload)
 
-		metrics.FunctionInvocations.WithLabelValues(name, h.k8sClient.GetNamespace()).Inc()
+		metrics.FunctionInvocations.WithLabelValues(name, function.Namespace).Inc()
 
 		respondJSON(w, http.StatusAccepted, map[string]interface{}{
 			"message":  "function invocation queued",
@@ -257,7 +292,7 @@ func (h *FunctionHandler) InvokeFunction(w http.ResponseWriter, r *http.Request)
 
 	// Synchronous invocation if Kubernetes is available
 	if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
-		pod, response, err := h.k8sClient.InvokeFunction(r.Context(), name, "POST", "/", r.Body)
+		pod, response, err := h.k8sClient.InvokeFunction(r.Context(), function.Namespace, name, "POST", "/", r.Body)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to invoke function", err)
 			return
@@ -268,8 +303,8 @@ func (h *FunctionHandler) InvokeFunction(w http.ResponseWriter, r *http.Request)
 		// Record invocation in database
 		_ = h.functionRepo.RecordInvocation(r.Context(), name, eventID, "http.invoke", req.Payload)
 
-		metrics.FunctionInvocations.WithLabelValues(name, h.k8sClient.GetNamespace()).Inc()
-		metrics.FunctionDuration.WithLabelValues(name, h.k8sClient.GetNamespace()).Observe(duration)
+		metrics.FunctionInvocations.WithLabelValues(name, function.Namespace).Inc()
+		metrics.FunctionDuration.WithLabelValues(name, function.Namespace).Observe(duration)
 
 		var podName string
 		if pod != nil {
@@ -307,10 +342,17 @@ func (h *FunctionHandler) InvokeFunction(w http.ResponseWriter, r *http.Request)
 
 // DeleteFunction handles DELETE /v1/functions/{name}
 func (h *FunctionHandler) DeleteFunction(w http.ResponseWriter, r *http.Request) {
+	// Extract user from JWT token
+	claims, ok := auth.GetUserFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "user not authenticated", nil)
+		return
+	}
+
 	name := chi.URLParam(r, "name")
 
-	// Delete from database
-	err := h.functionRepo.Delete(r.Context(), name)
+	// Delete from database (scoped to user)
+	err := h.functionRepo.Delete(r.Context(), claims.UserID, name, claims.Namespace)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete function from database", err)
 		return
@@ -318,13 +360,13 @@ func (h *FunctionHandler) DeleteFunction(w http.ResponseWriter, r *http.Request)
 
 	// Delete from Kubernetes if available
 	if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
-		err = h.k8sClient.DeleteDeployment(r.Context(), name)
+		err = h.k8sClient.DeleteDeployment(r.Context(), claims.Namespace, name)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to delete function from Kubernetes", err)
 			return
 		}
 
-		metrics.ActiveFunctions.WithLabelValues(h.k8sClient.GetNamespace()).Dec()
+		metrics.ActiveFunctions.WithLabelValues(claims.Namespace).Dec()
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -335,6 +377,13 @@ func (h *FunctionHandler) DeleteFunction(w http.ResponseWriter, r *http.Request)
 
 // GetFunctionLogs handles GET /v1/functions/{name}/logs
 func (h *FunctionHandler) GetFunctionLogs(w http.ResponseWriter, r *http.Request) {
+	// Extract user from JWT token
+	claims, ok := auth.GetUserFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "user not authenticated", nil)
+		return
+	}
+
 	name := chi.URLParam(r, "name")
 	follow := r.URL.Query().Get("follow") == "true"
 
@@ -344,7 +393,7 @@ func (h *FunctionHandler) GetFunctionLogs(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	logStream, err := h.k8sClient.GetPodLogs(r.Context(), name, follow)
+	logStream, err := h.k8sClient.GetPodLogs(r.Context(), claims.Namespace, name, follow)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "failed to get logs", err)
 		return

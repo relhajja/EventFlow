@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -111,7 +113,31 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generateTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// For development only - generate a test token
-	token, err := s.auth.GenerateToken("dev-user", s.config.Namespace)
+	// In production, this would authenticate against an identity provider
+
+	var req struct {
+		UserID   string `json:"user_id"`
+		Username string `json:"username"`
+		Email    string `json:"email"`
+	}
+
+	// Parse request body for user selection
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Default to demo user if no body provided
+		req.UserID = "demo-user"
+		req.Username = "Demo User"
+		req.Email = "demo@eventflow.io"
+	}
+
+	// Validate required fields
+	if req.UserID == "" {
+		req.UserID = "demo-user"
+	}
+	if req.Username == "" {
+		req.Username = req.UserID
+	}
+
+	token, err := s.auth.GenerateToken(req.UserID, req.Username, req.Email)
 	if err != nil {
 		http.Error(w, "failed to generate token", http.StatusInternalServerError)
 		return
@@ -119,7 +145,13 @@ func (s *Server) generateTokenHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"token":"` + token + `"}`))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"token":     token,
+		"user_id":   req.UserID,
+		"username":  req.Username,
+		"email":     req.Email,
+		"namespace": fmt.Sprintf("tenant-%s", req.UserID),
+	})
 }
 
 func (s *Server) Router() http.Handler {

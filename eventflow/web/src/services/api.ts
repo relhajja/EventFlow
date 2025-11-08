@@ -15,8 +15,12 @@ api.interceptors.request.use((config) => {
 })
 
 export const authApi = {
-  getToken: async (): Promise<AuthToken> => {
-    const { data } = await axios.post<AuthToken>('/auth/token')
+  getToken: async (userId: string, username: string, email?: string): Promise<AuthToken> => {
+    const { data } = await api.post<AuthToken>('/auth/token', {
+      user_id: userId,
+      username: username,
+      email: email
+    })
     return data
   },
 }

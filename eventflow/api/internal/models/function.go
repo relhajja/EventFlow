@@ -1,10 +1,11 @@
 package models
 
-
 import "time"
 
 type Function struct {
 	Name      string            `json:"name"`
+	Namespace string            `json:"namespace"`
+	UserID    string            `json:"user_id"`
 	Image     string            `json:"image"`
 	Command   []string          `json:"command,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
@@ -15,6 +16,7 @@ type Function struct {
 
 type FunctionStatus struct {
 	Name              string    `json:"name"`
+	Namespace         string    `json:"namespace"`
 	Image             string    `json:"image"`
 	Replicas          int32     `json:"replicas"`
 	AvailableReplicas int32     `json:"available_replicas"`
@@ -25,11 +27,12 @@ type FunctionStatus struct {
 }
 
 type CreateFunctionRequest struct {
-	Name     string            `json:"name"`
-	Image    string            `json:"image"`
-	Command  []string          `json:"command,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	Replicas int32             `json:"replicas"`
+	Name      string            `json:"name"`
+	Namespace string            `json:"namespace"`
+	Image     string            `json:"image"`
+	Command   []string          `json:"command,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Replicas  int32             `json:"replicas"`
 }
 
 type InvokeFunctionRequest struct {

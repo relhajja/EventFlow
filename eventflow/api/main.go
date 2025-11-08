@@ -39,7 +39,7 @@ func main() {
 	}
 
 	// Initialize Kubernetes client
-	k8sClient, err := k8s.NewClient(cfg.Namespace)
+	k8sClient, err := k8s.NewClient()
 	if err != nil {
 		log.Fatalf("Failed to initialize Kubernetes client: %v", err)
 	}

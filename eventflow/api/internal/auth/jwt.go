@@ -1,6 +1,5 @@
 package auth
 
-
 import (
 	"context"
 	"fmt"
@@ -18,7 +17,9 @@ const (
 )
 
 type Claims struct {
+	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
+	Email     string `json:"email,omitempty"`
 	Namespace string `json:"namespace"`
 	jwt.RegisteredClaims
 }
@@ -81,9 +82,14 @@ func (a *Authenticator) ValidateToken(tokenString string) (*Claims, error) {
 }
 
 // GenerateToken generates a new JWT token (for testing/dev)
-func (a *Authenticator) GenerateToken(username, namespace string) (string, error) {
+func (a *Authenticator) GenerateToken(userID, username, email string) (string, error) {
+	// Auto-generate namespace based on user ID
+	namespace := fmt.Sprintf("tenant-%s", userID)
+
 	claims := Claims{
+		UserID:    userID,
 		Username:  username,
+		Email:     email,
 		Namespace: namespace,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),

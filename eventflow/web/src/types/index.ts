@@ -1,5 +1,6 @@
 export interface FunctionStatus {
   name: string
+  namespace?: string
   image: string
   replicas: number
   available_replicas: number
@@ -19,4 +20,15 @@ export interface CreateFunctionRequest {
 
 export interface AuthToken {
   token: string
+  user_id: string
+  username: string
+  email?: string
+  namespace: string
+}
+
+export interface User {
+  user_id: string
+  username: string
+  email?: string
+  namespace: string
 }

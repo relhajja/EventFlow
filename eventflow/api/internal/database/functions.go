@@ -20,7 +20,7 @@ func NewFunctionRepository(db *DB) *FunctionRepository {
 }
 
 // Create inserts a new function
-func (r *FunctionRepository) Create(ctx context.Context, name, image string, replicas int32, env map[string]string, command []string) (*models.Function, error) {
+func (r *FunctionRepository) Create(ctx context.Context, userID string, name string, namespace string, image string, replicas int32, env map[string]string, command []string) (*models.Function, error) {
 	var envJSON []byte
 	var err error
 	if len(env) > 0 {
@@ -30,9 +30,6 @@ func (r *FunctionRepository) Create(ctx context.Context, name, image string, rep
 		}
 	}
 
-	// PostgreSQL stores `command` as text[]; pass Go []string directly so pgx
-	// encodes it as a PostgreSQL array literal. Do not JSON-marshal the slice
-	// (that produces a JSON string which is invalid for text[] columns).
 	var commandParam interface{}
 	if len(command) > 0 {
 		commandParam = command
@@ -41,16 +38,16 @@ func (r *FunctionRepository) Create(ctx context.Context, name, image string, rep
 	}
 
 	query := `
-		INSERT INTO functions (name, image, replicas, env, command, status)
-		VALUES ($1, $2, $3, $4, $5, 'pending')
-		RETURNING id, name, image, replicas, created_at, updated_at
+		INSERT INTO functions (name, namespace, user_id, image, replicas, env, command, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+		RETURNING id, name, namespace, user_id, image, replicas, created_at, updated_at
 	`
 
 	var fn models.Function
 	var id uuid.UUID
 
-	err = r.db.pool.QueryRow(ctx, query, name, image, replicas, envJSON, commandParam).
-		Scan(&id, &fn.Name, &fn.Image, &fn.Replicas, &fn.CreatedAt, &fn.UpdatedAt)
+	err = r.db.pool.QueryRow(ctx, query, name, namespace, userID, image, replicas, envJSON, commandParam).
+		Scan(&id, &fn.Name, &fn.Namespace, &fn.UserID, &fn.Image, &fn.Replicas, &fn.CreatedAt, &fn.UpdatedAt)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create function: %w", err)
@@ -58,24 +55,24 @@ func (r *FunctionRepository) Create(ctx context.Context, name, image string, rep
 
 	fn.Env = env
 	fn.Command = command
-
+	fmt.Println(fn)
 	return &fn, nil
 }
 
-// Get retrieves a function by name
-func (r *FunctionRepository) Get(ctx context.Context, name string) (*models.Function, error) {
+// Get retrieves a function by name and user ID
+func (r *FunctionRepository) Get(ctx context.Context, userID string, name string, namespace string) (*models.Function, error) {
 	query := `
-		SELECT name, image, replicas, env, command, created_at, updated_at
+		SELECT name, namespace, user_id, image, replicas, env, command, created_at, updated_at
 		FROM functions
-		WHERE name = $1 AND deleted_at IS NULL
+		WHERE name = $1 AND namespace = $2 AND user_id = $3 AND deleted_at IS NULL
 	`
 
 	var fn models.Function
 	var envJSON []byte
 	var commandArray []string
-	
-	err := r.db.pool.QueryRow(ctx, query, name).
-		Scan(&fn.Name, &fn.Image, &fn.Replicas, &envJSON, &commandArray, &fn.CreatedAt, &fn.UpdatedAt)
+
+	err := r.db.pool.QueryRow(ctx, query, name, namespace, userID).
+		Scan(&fn.Name, &fn.Namespace, &fn.UserID, &fn.Image, &fn.Replicas, &envJSON, &commandArray, &fn.CreatedAt, &fn.UpdatedAt)
 
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("function not found: %s", name)
@@ -90,23 +87,23 @@ func (r *FunctionRepository) Get(ctx context.Context, name string) (*models.Func
 			return nil, fmt.Errorf("failed to unmarshal env: %w", err)
 		}
 	}
-	
+
 	// Assign command array
 	fn.Command = commandArray
 
 	return &fn, nil
 }
 
-// List retrieves all functions
-func (r *FunctionRepository) List(ctx context.Context) ([]*models.Function, error) {
+// List retrieves all functions for a user
+func (r *FunctionRepository) List(ctx context.Context, userID string) ([]*models.Function, error) {
 	query := `
-		SELECT name, image, replicas, env, command, created_at, updated_at
+		SELECT name, namespace, user_id, image, replicas, env, command, created_at, updated_at
 		FROM functions
-		WHERE deleted_at IS NULL
+		WHERE user_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
 	`
 
-	rows, err := r.db.pool.Query(ctx, query)
+	rows, err := r.db.pool.Query(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list functions: %w", err)
 	}
@@ -117,8 +114,8 @@ func (r *FunctionRepository) List(ctx context.Context) ([]*models.Function, erro
 		var fn models.Function
 		var envJSON []byte
 		var commandArray []string
-		
-		err := rows.Scan(&fn.Name, &fn.Image, &fn.Replicas, &envJSON, &commandArray, &fn.CreatedAt, &fn.UpdatedAt)
+
+		err := rows.Scan(&fn.Name, &fn.Namespace, &fn.UserID, &fn.Image, &fn.Replicas, &envJSON, &commandArray, &fn.CreatedAt, &fn.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan function: %w", err)
 		}
@@ -129,7 +126,7 @@ func (r *FunctionRepository) List(ctx context.Context) ([]*models.Function, erro
 				return nil, fmt.Errorf("failed to unmarshal env: %w", err)
 			}
 		}
-		
+
 		// Assign command array
 		fn.Command = commandArray
 
@@ -144,14 +141,14 @@ func (r *FunctionRepository) List(ctx context.Context) ([]*models.Function, erro
 }
 
 // Delete soft-deletes a function
-func (r *FunctionRepository) Delete(ctx context.Context, name string) error {
+func (r *FunctionRepository) Delete(ctx context.Context, userID string, name string, namespace string) error {
 	query := `
 		UPDATE functions
 		SET deleted_at = $1
-		WHERE name = $2 AND deleted_at IS NULL
+		WHERE name = $2 AND namespace = $3 AND user_id = $4 AND deleted_at IS NULL
 	`
 
-	result, err := r.db.pool.Exec(ctx, query, time.Now(), name)
+	result, err := r.db.pool.Exec(ctx, query, time.Now(), name, namespace, userID)
 	if err != nil {
 		return fmt.Errorf("failed to delete function: %w", err)
 	}

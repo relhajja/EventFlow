@@ -1,0 +1,133 @@
+---
+# ClusterRole for API to manage tenant namespaces and resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: eventflow-api-tenant-manager
+rules:
+  # Namespace management
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  
+  # Resource quotas for tenant namespaces
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  
+  # Function CRD management across all namespaces
+  - apiGroups: ["eventflow.eventflow.io"]
+    resources: ["functions"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  
+  - apiGroups: ["eventflow.eventflow.io"]
+    resources: ["functions/status"]
+    verbs: ["get", "update", "patch"]
+  
+  # Read-only access to deployments, pods, services across namespaces
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "watch"]
+  
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding for API service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: eventflow-api-tenant-manager-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eventflow-api-tenant-manager
+subjects:
+  - kind: ServiceAccount
+    name: eventflow-api
+    namespace: eventflow
+
+---
+# Deny access to system namespaces for security
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: eventflow-api-deny-system
+rules: []
+
+---
+# Block API from creating Functions in system namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eventflow-api-deny
+  namespace: default
+rules: []
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eventflow-api-deny-binding
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eventflow-api-deny
+subjects:
+  - kind: ServiceAccount
+    name: eventflow-api
+    namespace: eventflow
+
+---
+# Same deny for kube-system
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eventflow-api-deny
+  namespace: kube-system
+rules: []
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eventflow-api-deny-binding
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eventflow-api-deny
+subjects:
+  - kind: ServiceAccount
+    name: eventflow-api
+    namespace: eventflow
+
+---
+# Same deny for kube-public
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eventflow-api-deny
+  namespace: kube-public
+rules: []
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eventflow-api-deny-binding
+  namespace: kube-public
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eventflow-api-deny
+subjects:
+  - kind: ServiceAccount
+    name: eventflow-api
+    namespace: eventflow

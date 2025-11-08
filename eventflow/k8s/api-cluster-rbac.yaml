@@ -1,0 +1,74 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: eventflow-api-clusterrole
+rules:
+  # Namespace management for tenant isolation
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create"]
+  # Resource quota management for tenant namespaces
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list", "create", "update"]
+  # Allow API to manage Function CRs across all namespaces
+  - apiGroups: ["eventflow.eventflow.io"]
+    resources: ["functions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["eventflow.eventflow.io"]
+    resources: ["functions/status"]
+    verbs: ["get", "update", "patch"]
+  # Allow API to read deployments (for status)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+  # Allow API to read pods (for logs and status)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Allow API to read services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: eventflow-api-clusterrolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eventflow-api-clusterrole
+subjects:
+  - kind: ServiceAccount
+    name: eventflow-api
+    namespace: eventflow
+---
+# Deny access to default namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eventflow-api-deny
+  namespace: default
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eventflow-api-deny-binding
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eventflow-api-deny
+subjects:
+  - kind: ServiceAccount
+    name: eventflow-api
+    namespace: eventflow
