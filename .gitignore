@@ -246,6 +246,6 @@ htmlcov/
 !.gitkeep
 !.dockerignore
 !*/Dockerfile
-!*/Makefile
 !kind-config.yaml
+!Taskfile.yml
 !k8s-dashboard-token.txt

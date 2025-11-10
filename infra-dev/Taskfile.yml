@@ -1,0 +1,458 @@
+# https://taskfile.dev
+# EventFlow K3s Development Tasks
+# Usage: task <task-name>
+# Example: task setup
+
+version: '3'
+
+# Enables colored output and better error messages
+output: prefixed
+
+vars:
+  PROJECT_ROOT:
+    sh: dirname "{{.TASKFILE_DIR}}"
+  API_DIR: "{{.PROJECT_ROOT}}/eventflow/api"
+  OPERATOR_DIR: "{{.PROJECT_ROOT}}/eventflow/operator"
+  WEB_DIR: "{{.PROJECT_ROOT}}/eventflow/web"
+  K8S_DIR: "{{.PROJECT_ROOT}}/eventflow/k8s"
+  KUBECONFIG: "{{.HOME}}/.kube/config"
+  
+  # Colors
+  GREEN: '\033[0;32m'
+  YELLOW: '\033[0;33m'
+  BLUE: '\033[0;34m'
+  NC: '\033[0m' # No Color
+
+env:
+  KUBECONFIG: "{{.KUBECONFIG}}"
+
+# Intervals for watch mode
+interval: 2s
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # Installation
+  install:
+    desc: Install K3s cluster
+    cmds:
+      - |
+        if command -v k3s >/dev/null 2>&1; then
+          echo "K3s is already installed"
+          k3s --version
+        else
+          curl -sfL https://get.k3s.io | sh -s - \
+            --write-kubeconfig-mode 644 \
+            --disable traefik \
+            --disable servicelb \
+            --node-name eventflow-node
+          timeout 60 bash -c 'until sudo k3s kubectl get nodes 2>/dev/null; do sleep 2; done'
+          mkdir -p $HOME/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
+          sudo chown $(id -u):$(id -g) $HOME/.kube/config
+          echo "✅ K3s installed successfully!"
+        fi
+
+  # Build targets
+  build:
+    desc: Build all Docker images
+    deps:
+      - build:api
+      - build:operator
+      - build:web
+
+  build:api:
+    desc: Build API image
+    cmds:
+      - echo "Building EventFlow API..."
+      - docker build -t eventflow-api:latest {{.API_DIR}}
+      - docker save eventflow-api:latest | sudo k3s ctr images import -
+      - echo "✅ API image built and imported"
+
+  build:operator:
+    desc: Build Operator image
+    cmds:
+      - echo "Building EventFlow Operator..."
+      - docker build -t eventflow-operator:latest {{.OPERATOR_DIR}}
+      - docker save eventflow-operator:latest | sudo k3s ctr images import -
+      - echo "✅ Operator image built and imported"
+
+  build:web:
+    desc: Build Web UI image
+    cmds:
+      - echo "Building EventFlow Web UI..."
+      - docker build -t eventflow-web:latest {{.WEB_DIR}}
+      - docker save eventflow-web:latest | sudo k3s ctr images import -
+      - echo "✅ Web UI image built and imported"
+
+  # Deployment
+  deploy:
+    desc: Deploy EventFlow to K3s
+    cmds:
+      - echo "Deploying EventFlow to K3s..."
+      - kubectl create namespace eventflow --dry-run=client -o yaml | kubectl apply -f -
+      - kubectl apply -f {{.K8S_DIR}}/secrets.yaml
+      - kubectl apply -f {{.K8S_DIR}}/postgres.yaml
+      - echo "Waiting for PostgreSQL..."
+      - kubectl wait --for=condition=ready pod -l app=postgres -n eventflow --timeout=120s
+      - kubectl apply -f {{.K8S_DIR}}/rbac.yaml
+      - kubectl apply -f {{.K8S_DIR}}/api-rbac.yaml
+      - kubectl apply -f {{.K8S_DIR}}/api-cluster-rbac.yaml
+      - kubectl apply -f {{.K8S_DIR}}/api-tenant-rbac.yaml
+      - kubectl apply -f {{.K8S_DIR}}/operator-rbac.yaml
+      - kubectl apply -f {{.K8S_DIR}}/crd-function.yaml
+      - kubectl apply -f {{.K8S_DIR}}/operator.yaml
+      - echo "Waiting for operator..."
+      - kubectl wait --for=condition=ready pod -l app=operator-controller-manager -n eventflow --timeout=120s || true
+      - kubectl apply -f {{.K8S_DIR}}/deployment.yaml
+      - echo "Waiting for API..."
+      - kubectl wait --for=condition=ready pod -l app=eventflow-api -n eventflow --timeout=120s
+      - echo "Waiting for Web UI..."
+      - kubectl wait --for=condition=ready pod -l app=eventflow-web -n eventflow --timeout=120s
+      - |
+        echo ""
+        echo "✅ EventFlow deployed successfully!"
+        echo ""
+        echo "Access the application:"
+        echo "  Web UI: http://localhost:30080"
+        echo "  API: http://localhost:30080"
+        echo ""
+        echo "Check status: task status"
+
+  # Complete setup
+  setup:
+    desc: Complete setup (install K3s, build images, deploy)
+    deps:
+      - install
+      - build
+      - deploy
+
+  # Rebuild targets
+  rebuild:
+    desc: Rebuild all images and restart deployments
+    deps:
+      - build
+    cmds:
+      - kubectl rollout restart deployment -n eventflow
+      - echo "✅ All deployments restarted"
+
+  rebuild:api:
+    desc: Rebuild and redeploy API only
+    deps:
+      - build:api
+    cmds:
+      - kubectl rollout restart deployment/eventflow-api -n eventflow
+      - echo "Waiting for rollout..."
+      - kubectl rollout status deployment/eventflow-api -n eventflow
+      - echo "✅ API redeployed"
+
+  rebuild:operator:
+    desc: Rebuild and redeploy Operator only
+    deps:
+      - build:operator
+    cmds:
+      - kubectl rollout restart deployment/operator-controller-manager -n eventflow
+      - echo "Waiting for rollout..."
+      - kubectl rollout status deployment/operator-controller-manager -n eventflow
+      - echo "✅ Operator redeployed"
+
+  rebuild:web:
+    desc: Rebuild and redeploy Web UI only
+    deps:
+      - build:web
+    cmds:
+      - kubectl rollout restart deployment/eventflow-web -n eventflow
+      - echo "Waiting for rollout..."
+      - kubectl rollout status deployment/eventflow-web -n eventflow
+      - echo "✅ Web UI redeployed"
+
+  # Logs
+  logs:api:
+    desc: Follow API logs
+    cmds:
+      - kubectl logs -f -n eventflow -l app=eventflow-api --tail=50
+
+  logs:operator:
+    desc: Follow Operator logs
+    cmds:
+      - kubectl logs -f -n eventflow -l app=operator-controller-manager --tail=50
+
+  logs:web:
+    desc: Follow Web UI logs
+    cmds:
+      - kubectl logs -f -n eventflow -l app=eventflow-web --tail=50
+
+  logs:postgres:
+    desc: Follow PostgreSQL logs
+    cmds:
+      - kubectl logs -f -n eventflow -l app=postgres --tail=50
+
+  # Status
+  status:
+    desc: Show cluster and EventFlow status
+    cmds:
+      - echo "EventFlow Status:"
+      - echo ""
+      - kubectl get pods -n eventflow
+      - echo ""
+      - echo "Tenant namespaces:"
+      - kubectl get namespaces -l type=tenant || echo "No tenant namespaces yet"
+      - echo ""
+      - echo "Functions:"
+      - kubectl get functions.eventflow.eventflow.io --all-namespaces || echo "No functions deployed yet"
+
+  # Shell access
+  shell:api:
+    desc: Open shell in API pod
+    cmds:
+      - kubectl exec -it -n eventflow $(kubectl get pod -n eventflow -l app=eventflow-api -o jsonpath='{.items[0].metadata.name}') -- /bin/sh
+
+  shell:postgres:
+    desc: Open PostgreSQL shell
+    cmds:
+      - kubectl exec -it -n eventflow $(kubectl get pod -n eventflow -l app=postgres -o jsonpath='{.items[0].metadata.name}') -- psql -U eventflow -d eventflow
+
+  # Monitoring
+  monitor:api:
+    desc: Monitor API for errors
+    cmds:
+      - kubectl logs -f -n eventflow -l app=eventflow-api --all-containers=true 2>&1 | grep --line-buffered -E "(too many open files|error|Error|ERROR|failed|Failed|FAILED|panic|Panic|PANIC)"
+
+  monitor:operator:
+    desc: Monitor Operator for errors
+    cmds:
+      - kubectl logs -f -n eventflow -l app=operator-controller-manager --all-containers=true 2>&1 | grep --line-buffered -E "(error|Error|ERROR|failed|Failed|FAILED|panic|Panic|PANIC)"
+
+  monitor:all:
+    desc: Monitor all components for errors
+    cmds:
+      - kubectl logs -f -n eventflow --all-containers=true 2>&1 | grep --line-buffered -E "(too many open files|error|Error|ERROR|failed|Failed|FAILED|panic|Panic|PANIC)"
+
+  # Cleanup
+  clean:
+    desc: Remove EventFlow from K3s (keeps K3s installed)
+    cmds:
+      - echo "Cleaning up EventFlow..."
+      - kubectl delete deployment --all -n eventflow --ignore-not-found=true
+      - kubectl delete service --all -n eventflow --ignore-not-found=true
+      - kubectl delete functions.eventflow.eventflow.io --all --all-namespaces --ignore-not-found=true
+      - kubectl delete namespace -l type=tenant --ignore-not-found=true
+      - kubectl delete namespace eventflow --ignore-not-found=true
+      - kubectl delete crd functions.eventflow.eventflow.io --ignore-not-found=true
+      - kubectl delete clusterrole eventflow-api-cluster-role --ignore-not-found=true
+      - kubectl delete clusterrolebinding eventflow-api-cluster-binding --ignore-not-found=true
+      - echo "✅ EventFlow cleaned up"
+
+  reset:
+    desc: Clean and redeploy EventFlow
+    deps:
+      - clean
+      - deploy
+
+  uninstall:
+    desc: Completely uninstall K3s
+    prompt: This will completely remove K3s from your system. Continue?
+    cmds:
+      - |
+        if [ -f /usr/local/bin/k3s-uninstall.sh ]; then
+          sudo /usr/local/bin/k3s-uninstall.sh
+          rm -f $HOME/.kube/config
+          echo "✅ K3s uninstalled"
+        else
+          echo "K3s uninstall script not found"
+          exit 1
+        fi
+
+  # Development workflow helpers
+  dev:
+    desc: Start development mode (rebuild on changes)
+    cmds:
+      - echo "Watching for changes... Press Ctrl+C to stop"
+      - task --watch rebuild:api
+
+  'test:create-function':
+    desc: 'Create a test function (requires TOKEN env var)'
+    cmds:
+      - |
+        if [ -z "$TOKEN" ]; then
+          echo "❌ Please set TOKEN environment variable"
+          echo "Example: TOKEN=your-jwt-token task test:create-function"
+          exit 1
+        fi
+        curl -X POST http://localhost:30080/v1/functions \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "name": "hello-test",
+            "image": "hashicorp/http-echo:latest",
+            "replicas": 1,
+            "command": ["-text=Hello from EventFlow!"]
+          }'
+        echo ""
+
+  'test:list-functions':
+    desc: 'List functions (requires TOKEN env var)'
+    cmds:
+      - |
+        if [ -z "$TOKEN" ]; then
+          echo "❌ Please set TOKEN environment variable"
+          exit 1
+        fi
+        curl http://localhost:30080/v1/functions \
+          -H "Authorization: Bearer $TOKEN" | jq '.'
+
+  'test:get-token':
+    desc: 'Get JWT token for a user (usage: task test:get-token USER=alice)'
+    cmds:
+      - |
+        USER=$${USER:-alice}
+        echo "Getting token for user: $$USER"
+        curl -X POST http://localhost:30080/auth/token \
+          -H "Content-Type: application/json" \
+          -d "{\"user_id\":\"$$USER\",\"username\":\"$$USER\",\"email\":\"$$USER@example.com\"}" | jq -r '.token'
+
+  verify:
+    desc: Verify installation and health
+    cmds:
+      - echo "🔍 Verifying EventFlow installation..."
+      - echo ""
+      - echo "1. Checking K3s..."
+      - kubectl version --short || echo "❌ K3s not accessible"
+      - echo ""
+      - echo "2. Checking namespaces..."
+      - kubectl get ns eventflow || echo "❌ eventflow namespace not found"
+      - echo ""
+      - echo "3. Checking pods..."
+      - kubectl get pods -n eventflow
+      - echo ""
+      - echo "4. Checking services..."
+      - kubectl get svc -n eventflow
+      - echo ""
+      - echo "5. Testing API health..."
+      - curl -s http://localhost:30080/healthz && echo " ✅ API healthy" || echo " ❌ API not responding"
+      - echo ""
+      - echo "6. Testing Web UI..."
+      - curl -s -o /dev/null -w "%{http_code}" http://localhost:30080 && echo " ✅ Web UI accessible" || echo " ❌ Web UI not responding"
+
+  images:
+    desc: List imported images in K3s
+    cmds:
+      - sudo k3s ctr images ls | grep eventflow
+
+  pods:
+    desc: Show all EventFlow pods with status
+    cmds:
+      - kubectl get pods -n eventflow -o wide
+
+  events:
+    desc: Show recent Kubernetes events
+    cmds:
+      - kubectl get events -n eventflow --sort-by='.lastTimestamp' | tail -20
+
+  'describe:api':
+    desc: 'Describe API pod'
+    cmds:
+      - kubectl describe pod -n eventflow -l app=eventflow-api | tail -50
+
+  'describe:operator':
+    desc: 'Describe Operator pod'
+    cmds:
+      - kubectl describe pod -n eventflow -l app=operator-controller-manager | tail -50
+
+  'port-forward':
+    desc: 'Port forward to API (alternative to NodePort)'
+    cmds:
+      - echo "Forwarding localhost:8080 -> eventflow-api:80"
+      - kubectl port-forward -n eventflow svc/eventflow-api 8080:80
+
+  dashboard:
+    desc: Open Kubernetes dashboard (k9s)
+    cmds:
+      - k9s -n eventflow
+
+  # Quick aliases
+  up:
+    desc: Alias for setup
+    cmds:
+      - task setup
+
+  down:
+    desc: Alias for clean
+    cmds:
+      - task clean
+
+  restart:
+    desc: Restart all deployments
+    cmds:
+      - kubectl rollout restart deployment -n eventflow
+      - echo "✅ All deployments restarted"
+
+  'restart:api':
+    desc: 'Restart API only'
+    cmds:
+      - kubectl rollout restart deployment/eventflow-api -n eventflow
+      - kubectl rollout status deployment/eventflow-api -n eventflow
+
+  'restart:operator':
+    desc: 'Restart Operator only'
+    cmds:
+      - kubectl rollout restart deployment/operator-controller-manager -n eventflow
+      - kubectl rollout status deployment/operator-controller-manager -n eventflow
+
+  'restart:web':
+    desc: 'Restart Web UI only'
+    cmds:
+      - kubectl rollout restart deployment/eventflow-web -n eventflow
+      - kubectl rollout status deployment/eventflow-web -n eventflow
+
+  # Browser Access
+  open:
+    desc: Open EventFlow Web UI in browser
+    cmds:
+      - |
+        echo "🌐 Opening EventFlow Web UI..."
+        echo ""
+        echo "   Web UI:  http://localhost:30300"
+        echo "   API:     http://localhost:30080"
+        echo "   Metrics: http://localhost:30090/metrics"
+        echo ""
+        xdg-open http://localhost:30300 2>/dev/null || open http://localhost:30300 2>/dev/null || echo "Please open http://localhost:30300 in your browser"
+
+  'open:api':
+    desc: 'Show API endpoints and open API docs'
+    cmds:
+      - |
+        echo "📡 EventFlow API Endpoints:"
+        echo ""
+        echo "   Health:  http://localhost:30080/healthz"
+        echo "   Ready:   http://localhost:30080/readyz"
+        echo "   Metrics: http://localhost:30090/metrics"
+        echo ""
+        echo "   Auth:    POST http://localhost:30080/auth/token"
+        echo "   Functions:"
+        echo "     List:   GET    http://localhost:30080/v1/functions"
+        echo "     Create: POST   http://localhost:30080/v1/functions"
+        echo "     Get:    GET    http://localhost:30080/v1/functions/{name}"
+        echo "     Delete: DELETE http://localhost:30080/v1/functions/{name}"
+        echo "     Invoke: POST   http://localhost:30080/v1/functions/{name}:invoke"
+        echo "     Logs:   GET    http://localhost:30080/v1/functions/{name}/logs"
+        echo ""
+        echo "Testing health endpoint..."
+        curl -s http://localhost:30080/healthz && echo " ✅"
+
+  urls:
+    desc: Show all access URLs
+    cmds:
+      - |
+        echo "🔗 EventFlow Access URLs"
+        echo "========================"
+        echo ""
+        echo "Web UI:      http://localhost:30300"
+        echo "API:         http://localhost:30080"
+        echo "Metrics:     http://localhost:30090/metrics"
+        echo ""
+        echo "Health:      http://localhost:30080/healthz"
+        echo "Ready:       http://localhost:30080/readyz"

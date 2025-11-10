@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/eventflow/api/internal/models"
 	appsv1 "k8s.io/api/apps/v1"
@@ -56,6 +57,14 @@ func NewClient() (*Client, error) {
 			}, nil
 		}
 	}
+
+	// Configure client with aggressive limits to prevent file descriptor exhaustion
+	config.QPS = 10                   // Very conservative queries per second
+	config.Burst = 15                 // Very conservative burst capacity
+	config.Timeout = 30 * time.Second // Request timeout
+
+	// Note: We cannot set custom Transport because it conflicts with TLS settings
+	// The default transport will be used with connection pooling managed by client-go
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -454,6 +463,24 @@ func (c *Client) CreateFunctionCR(ctx context.Context, req models.CreateFunction
 	_, err := c.dynamicClient.Resource(functionGVR).Namespace(req.Namespace).Create(ctx, function, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to create Function CR: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Client) DeleteFunctionCR(ctx context.Context, name, namespace string, userID string) error {
+	if c.dynamicClient == nil {
+		return fmt.Errorf("dynamic client is not initialized")
+	}
+	functionGVR := schema.GroupVersionResource{
+		Group:    "eventflow.eventflow.io",
+		Version:  "v1alpha1",
+		Resource: "functions",
+	}
+
+	err := c.dynamicClient.Resource(functionGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete Function CR: %w", err)
 	}
 
 	return nil

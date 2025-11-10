@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { functionsApi } from '@/services/api'
-import { Plus, Play, Trash2, AlertCircle, Server } from 'lucide-react'
+import { Plus, Play, Trash2, AlertCircle, Server, PowerOff } from 'lucide-react'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -20,6 +20,13 @@ export default function Dashboard() {
     },
   })
 
+  const undeployMutation = useMutation({
+    mutationFn: functionsApi.undeploy,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['functions'] })
+    },
+  })
+
   const invokeMutation = useMutation({
     mutationFn: functionsApi.invoke,
   })
@@ -27,6 +34,12 @@ export default function Dashboard() {
   const handleDelete = async (name: string) => {
     if (confirm(`Are you sure you want to delete function "${name}"?`)) {
       await deleteMutation.mutateAsync(name)
+    }
+  }
+
+  const handleUndeploy = async (name: string) => {
+    if (confirm(`Are you sure you want to undeploy function "${name}"? This will remove it from Kubernetes but keep it in the database.`)) {
+      await undeployMutation.mutateAsync(name)
     }
   }
 
@@ -125,6 +138,14 @@ export default function Dashboard() {
                 >
                   <Play className="w-4 h-4" />
                   <span>Invoke</span>
+                </button>
+                <button
+                  onClick={() => handleUndeploy(func.name)}
+                  disabled={undeployMutation.isPending}
+                  className="px-3 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-700 text-white rounded transition"
+                  title="Undeploy (remove from Kubernetes)"
+                >
+                  <PowerOff className="w-4 h-4" />
                 </button>
                 <button
                   onClick={() => handleDelete(func.name)}

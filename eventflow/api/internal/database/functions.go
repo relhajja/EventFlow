@@ -141,7 +141,7 @@ func (r *FunctionRepository) List(ctx context.Context, userID string) ([]*models
 }
 
 // Delete soft-deletes a function
-func (r *FunctionRepository) Delete(ctx context.Context, userID string, name string, namespace string) error {
+func (r *FunctionRepository) Delete(ctx context.Context, name string, namespace string, userID string) error {
 	query := `
 		UPDATE functions
 		SET deleted_at = $1

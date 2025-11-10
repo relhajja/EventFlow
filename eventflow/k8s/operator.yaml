@@ -18,9 +18,7 @@ spec:
       - name: operator
         image: eventflow-operator:latest
         imagePullPolicy: Never
-        command: ["./operator"]
-        args:
-        - --namespace=eventflow
+        command: ["/manager"]
         resources:
           requests:
             memory: "64Mi"

@@ -5,17 +5,19 @@ metadata:
   namespace: eventflow
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: eventflow-operator
-  namespace: eventflow
 rules:
-- apiGroups: ["eventflow.io"]
+- apiGroups: ["eventflow.eventflow.io"]
   resources: ["functions"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["eventflow.io"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["eventflow.eventflow.io"]
   resources: ["functions/status"]
   verbs: ["get", "update", "patch"]
+- apiGroups: ["eventflow.eventflow.io"]
+  resources: ["functions/finalizers"]
+  verbs: ["update"]
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -25,15 +27,17 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: eventflow-operator
-  namespace: eventflow
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: eventflow-operator
 subjects:
 - kind: ServiceAccount

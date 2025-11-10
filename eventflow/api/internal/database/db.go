@@ -18,9 +18,9 @@ func Connect(ctx context.Context, databaseURL string) (*DB, error) {
 		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
 
-	// Connection pool settings for scalability
-	config.MaxConns = 25
-	config.MinConns = 5
+	// Connection pool settings to prevent resource exhaustion
+	config.MaxConns = 10 // Reduced from 25 to conserve file descriptors
+	config.MinConns = 2  // Reduced from 5
 	config.MaxConnLifetime = 0
 	config.MaxConnIdleTime = 0
 

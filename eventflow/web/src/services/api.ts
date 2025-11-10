@@ -44,6 +44,10 @@ export const functionsApi = {
     await api.delete(`/v1/functions/${name}`)
   },
 
+  undeploy: async (name: string): Promise<void> => {
+    await api.post(`/v1/functions/${name}/undeploy`)
+  },
+
   invoke: async (name: string, payload?: Record<string, unknown>): Promise<void> => {
     await api.post(`/v1/functions/${name}:invoke`, { payload })
   },

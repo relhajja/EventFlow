@@ -95,6 +95,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/{name}", functionHandler.GetFunction)
 			r.Delete("/{name}", functionHandler.DeleteFunction)
 			r.Post("/{name}:invoke", functionHandler.InvokeFunction)
+			r.Post("/{name}/undeploy", functionHandler.UndeployFunction)
 			r.Get("/{name}/logs", functionHandler.GetFunctionLogs)
 		})
 	})

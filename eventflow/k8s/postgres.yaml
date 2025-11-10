@@ -22,7 +22,9 @@ data:
 
     CREATE TABLE IF NOT EXISTS functions (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        name VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        namespace VARCHAR(255) NOT NULL,
+        user_id VARCHAR(255) NOT NULL,
         image VARCHAR(500) NOT NULL,
         replicas INT NOT NULL DEFAULT 1,
         command TEXT[],
@@ -33,7 +35,8 @@ data:
         deleted_at TIMESTAMP WITH TIME ZONE,
         
         CONSTRAINT name_format CHECK (name ~ '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'),
-        CONSTRAINT replicas_positive CHECK (replicas > 0)
+        CONSTRAINT replicas_positive CHECK (replicas > 0),
+        UNIQUE (name, user_id)
     );
 
     CREATE TABLE IF NOT EXISTS invocations (

@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: builder-worker
+  namespace: eventflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: builder-worker
+  template:
+    metadata:
+      labels:
+        app: builder-worker
+    spec:
+      serviceAccountName: builder-worker
+      containers:
+      - name: worker
+        image: eventflow-builder:latest
+        imagePullPolicy: Never
+        command: ["/app/worker"]
+        env:
+        - name: DATABASE_URL
+          value: "postgres://eventflow:eventflow123@postgres.eventflow.svc.cluster.local:5432/eventflow?sslmode=disable"
+        - name: NATS_URL
+          value: "nats://nats.eventflow.svc.cluster.local:4222"
+        - name: REGISTRY_URL
+          value: "docker-registry.eventflow.svc.cluster.local:5000"
+        - name: DOCKER_HOST
+          value: "unix:///var/run/docker.sock"
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2"
+        securityContext:
+          privileged: true  # Required for Docker socket access
+      volumes:
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: builder-worker
+  namespace: eventflow
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: builder-worker
+  namespace: eventflow
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["eventflow.eventflow.io"]
+  resources: ["functions"]
+  verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: builder-worker
+  namespace: eventflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: builder-worker
+subjects:
+- kind: ServiceAccount
+  name: builder-worker
+  namespace: eventflow

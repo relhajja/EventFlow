@@ -16,27 +16,32 @@ The EventFlow Operator watches for `Function` custom resources and automatically
 - kubectl
 - kind cluster (for local development)
 
-### Local Development with kind
+### Local Development with K3s
 
 **Build and deploy the operator:**
 
 ```bash
-# Build the operator image
-make docker-build IMG=eventflow-operator:latest
+# Using Task (recommended)
+cd ../../infra-dev
+task rebuild:operator
 
-# Load into kind cluster
-kind load docker-image eventflow-operator:latest --name eventflow
-
-# Deploy to cluster (applies CRDs, RBAC, and operator deployment)
-make deploy
+# Or manually:
+cd eventflow/operator
+docker build -t eventflow-operator:latest .
+docker save eventflow-operator:latest | sudo k3s ctr images import -
+kubectl delete pod -n eventflow -l app=eventflow-operator
 ```
 
 **Quick redeploy after code changes:**
 
 ```bash
-make docker-build IMG=eventflow-operator:latest && \
-  kind load docker-image eventflow-operator:latest --name eventflow && \
-  kubectl rollout restart deployment/operator-controller-manager -n eventflow
+# Using Task
+task rebuild:operator
+
+# Or manually
+docker build -t eventflow-operator:latest .
+docker save eventflow-operator:latest | sudo k3s ctr images import -
+kubectl delete pod -n eventflow -l app=eventflow-operator
 ```
 
 ### Create a Function
@@ -74,35 +79,36 @@ kubectl logs -n eventflow -l control-plane=controller-manager --tail=50 -f
 
 ```bash
 # Delete function instances
-kubectl delete functions --all -n eventflow
+kubectl delete functions --all -A
 
-# Undeploy operator
-make undeploy
+# Using Task
+task clean
 
-# Uninstall CRDs
-make uninstall
+# Or manually
+kubectl delete -f ../../k8s/operator.yaml
+kubectl delete -f ../../k8s/crd-function.yaml
 ```
 
 ## Development
 
 **Generate manifests (after modifying types):**
 ```bash
-make manifests
+./bin/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 ```
 
 **Generate code (DeepCopy methods):**
 ```bash
-make generate
+./bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
 ```
 
 **Run tests:**
 ```bash
-make test
+go test ./... -v
 ```
 
 **Build locally without Docker:**
 ```bash
-make build
+go build -o bin/manager cmd/main.go
 ```
 
 ## Project Structure

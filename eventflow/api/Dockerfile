@@ -12,8 +12,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o eventflow-api .
+# Build with executable permissions
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o eventflow-api . && chmod +x eventflow-api
 
 # Final stage
 FROM alpine:latest
@@ -22,7 +22,7 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 
-COPY --from=builder /app/eventflow-api .
+COPY --from=builder --chmod=755 /app/eventflow-api .
 
 EXPOSE 8080
 
