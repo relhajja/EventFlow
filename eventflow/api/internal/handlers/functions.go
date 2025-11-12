@@ -48,8 +48,46 @@ func (h *FunctionHandler) CreateFunction(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Validate request
-	if req.Name == "" || req.Image == "" {
-		respondError(w, http.StatusBadRequest, "name and image are required", nil)
+	if req.Name == "" {
+		respondError(w, http.StatusBadRequest, "name is required", nil)
+		return
+	}
+
+	// Determine deployment type
+	deploymentType := req.DeploymentType
+	if deploymentType == "" {
+		// Auto-detect based on provided fields
+		if req.GitConfig != nil && req.GitConfig.URL != "" {
+			deploymentType = "git"
+		} else if req.SourceCode != "" {
+			deploymentType = "code"
+		} else if req.Image != "" {
+			deploymentType = "image"
+		} else {
+			respondError(w, http.StatusBadRequest, "must provide either image, source_code, or git_config", nil)
+			return
+		}
+	}
+
+	// Validate based on deployment type
+	switch deploymentType {
+	case "image":
+		if req.Image == "" {
+			respondError(w, http.StatusBadRequest, "image is required for deployment_type=image", nil)
+			return
+		}
+	case "code":
+		if req.SourceCode == "" || req.Runtime == "" {
+			respondError(w, http.StatusBadRequest, "source_code and runtime are required for deployment_type=code", nil)
+			return
+		}
+	case "git":
+		if req.GitConfig == nil || req.GitConfig.URL == "" {
+			respondError(w, http.StatusBadRequest, "git_config.url is required for deployment_type=git", nil)
+			return
+		}
+	default:
+		respondError(w, http.StatusBadRequest, "invalid deployment_type. Must be: git, code, or image", nil)
 		return
 	}
 
@@ -68,37 +106,65 @@ func (h *FunctionHandler) CreateFunction(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Prepare git config fields
+	var gitURL, gitBranch, gitPath string
+	if req.GitConfig != nil {
+		gitURL = req.GitConfig.URL
+		gitBranch = req.GitConfig.Branch
+		if gitBranch == "" {
+			gitBranch = "main"
+		}
+		gitPath = req.GitConfig.Path
+		if gitPath == "" {
+			gitPath = "./"
+		}
+	}
+
 	// Save to database first
-	function, err := h.functionRepo.Create(r.Context(), claims.UserID, req.Name, req.Namespace, req.Image, req.Replicas, req.Env, req.Command)
+	function, err := h.functionRepo.Create(r.Context(), claims.UserID, req.Name, req.Namespace, req.Image, req.Replicas, req.Env, req.Command, deploymentType, gitURL, gitBranch, gitPath)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create function in database", err)
 		return
 	}
 
-	// Create Function CR in Kubernetes if available
-	if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
-		err = h.k8sClient.CreateFunctionCR(r.Context(), req)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to create function in Kubernetes", err)
-			return
+	// Handle deployment based on type
+	switch deploymentType {
+	case "image":
+		// Direct deployment with existing image
+		if h.k8sClient != nil && h.k8sClient.HasKubernetes() {
+			err = h.k8sClient.CreateFunctionCR(r.Context(), req)
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, "failed to create function in Kubernetes", err)
+				return
+			}
+			metrics.ActiveFunctions.WithLabelValues(req.Namespace).Inc()
 		}
-		metrics.ActiveFunctions.WithLabelValues(req.Namespace).Inc()
+		
+		// Return immediate success
+		status := models.FunctionStatus{
+			Name:              function.Name,
+			Namespace:         function.Namespace,
+			Image:             function.Image,
+			Replicas:          function.Replicas,
+			AvailableReplicas: 0,
+			ReadyReplicas:     0,
+			UpdatedReplicas:   0,
+			Status:            "Pending",
+			CreatedAt:         function.CreatedAt,
+		}
+		respondJSON(w, http.StatusCreated, status)
+		
+	case "code", "git":
+		// Queue build job (will be handled by builder worker via NATS events)
+		// TODO: Create build job and publish NATS event
+		// For now, return accepted status
+		respondJSON(w, http.StatusAccepted, map[string]interface{}{
+			"message":         "Build queued",
+			"function_name":   req.Name,
+			"deployment_type": deploymentType,
+			"status":          "pending",
+		})
 	}
-
-	// Return as FunctionStatus
-	status := models.FunctionStatus{
-		Name:              function.Name,
-		Namespace:         function.Namespace,
-		Image:             function.Image,
-		Replicas:          function.Replicas,
-		AvailableReplicas: 0,
-		ReadyReplicas:     0,
-		UpdatedReplicas:   0,
-		Status:            "Pending",
-		CreatedAt:         function.CreatedAt,
-	}
-
-	respondJSON(w, http.StatusCreated, status)
 }
 
 // ListFunctions handles GET /v1/functions

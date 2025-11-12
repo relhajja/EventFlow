@@ -10,9 +10,19 @@ export interface FunctionStatus {
   created_at: string
 }
 
+export interface GitConfig {
+  url: string
+  branch?: string
+  path?: string
+}
+
 export interface CreateFunctionRequest {
   name: string
-  image: string
+  deployment_type?: 'git' | 'code' | 'image'
+  image?: string
+  runtime?: string
+  source_code?: string
+  git_config?: GitConfig
   command?: string[]
   env?: Record<string, string>
   replicas: number

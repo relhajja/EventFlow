@@ -20,7 +20,7 @@ func NewFunctionRepository(db *DB) *FunctionRepository {
 }
 
 // Create inserts a new function
-func (r *FunctionRepository) Create(ctx context.Context, userID string, name string, namespace string, image string, replicas int32, env map[string]string, command []string) (*models.Function, error) {
+func (r *FunctionRepository) Create(ctx context.Context, userID string, name string, namespace string, image string, replicas int32, env map[string]string, command []string, deploymentType string, gitURL string, gitBranch string, gitPath string) (*models.Function, error) {
 	var envJSON []byte
 	var err error
 	if len(env) > 0 {
@@ -37,16 +37,31 @@ func (r *FunctionRepository) Create(ctx context.Context, userID string, name str
 		commandParam = nil
 	}
 
+	// Default deployment type to 'image' if not specified
+	if deploymentType == "" {
+		deploymentType = "image"
+	}
+
+	// Default git branch to 'main' if not specified
+	if gitBranch == "" && deploymentType == "git" {
+		gitBranch = "main"
+	}
+
+	// Default git path to './' if not specified
+	if gitPath == "" && deploymentType == "git" {
+		gitPath = "./"
+	}
+
 	query := `
-		INSERT INTO functions (name, namespace, user_id, image, replicas, env, command, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+		INSERT INTO functions (name, namespace, user_id, image, replicas, env, command, status, deployment_type, git_url, git_branch, git_path)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11)
 		RETURNING id, name, namespace, user_id, image, replicas, created_at, updated_at
 	`
 
 	var fn models.Function
 	var id uuid.UUID
 
-	err = r.db.pool.QueryRow(ctx, query, name, namespace, userID, image, replicas, envJSON, commandParam).
+	err = r.db.pool.QueryRow(ctx, query, name, namespace, userID, image, replicas, envJSON, commandParam, deploymentType, gitURL, gitBranch, gitPath).
 		Scan(&id, &fn.Name, &fn.Namespace, &fn.UserID, &fn.Image, &fn.Replicas, &fn.CreatedAt, &fn.UpdatedAt)
 
 	if err != nil {

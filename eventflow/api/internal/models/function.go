@@ -26,15 +26,31 @@ type FunctionStatus struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
+type GitConfig struct {
+	URL      string   `json:"url"`
+	Branch   string   `json:"branch,omitempty"`   // default: main
+	Path     string   `json:"path,omitempty"`     // subdirectory path, default: ./
+	Auth     *GitAuth `json:"auth,omitempty"`     // authentication for private repos
+}
+
+type GitAuth struct {
+	Type     string `json:"type"`               // basic, token, ssh
+	Username string `json:"username,omitempty"` // for basic auth
+	Password string `json:"password,omitempty"` // for basic auth or token
+	SSHKey   string `json:"ssh_key,omitempty"`  // for ssh auth
+}
+
 type CreateFunctionRequest struct {
-	Name       string            `json:"name"`
-	Namespace  string            `json:"namespace"`
-	Image      string            `json:"image,omitempty"`       // Optional if source code is provided
-	Runtime    string            `json:"runtime,omitempty"`     // python, nodejs, go
-	SourceCode string            `json:"source_code,omitempty"` // Base64 encoded source
-	Command    []string          `json:"command,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	Replicas   int32             `json:"replicas"`
+	Name           string            `json:"name"`
+	Namespace      string            `json:"namespace"`
+	DeploymentType string            `json:"deployment_type,omitempty"` // git, code, image (default: image)
+	Image          string            `json:"image,omitempty"`            // for deployment_type=image
+	Runtime        string            `json:"runtime,omitempty"`          // python, nodejs, go, auto
+	SourceCode     string            `json:"source_code,omitempty"`      // Base64 encoded (deployment_type=code)
+	GitConfig      *GitConfig        `json:"git_config,omitempty"`       // for deployment_type=git
+	Command        []string          `json:"command,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Replicas       int32             `json:"replicas"`
 }
 
 type InvokeFunctionRequest struct {
