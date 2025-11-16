@@ -1,246 +1,478 @@
-package builder
+package main
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
+	"time"
 
-	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
-type BuildRequest struct {
-	FunctionName string
-	Runtime      string // python, nodejs, go
-	SourceCode   string // base64 encoded
-	UserID       string
-	Namespace    string
-	Registry     string // Docker registry URL
+// ============================================================================
+// Domain Models
+// ============================================================================
+
+// BuildReq represents a request to build a container image from source
+type BuildReq struct {
+	BuildID            string            `json:"build_id"`
+	SourceType         string            `json:"source_type"` // "git" | "tar" | "code"
+	Source             string            `json:"source"`      // Git URL, tar URL, or inline code
+	ImageRef           string            `json:"image_ref"`   // Target image name with registry
+	Prefer             *string           `json:"prefer,omitempty"`
+	GitRef             string            `json:"git_ref,omitempty"`    // Branch/tag for git sources
+	Runtime            string            `json:"runtime,omitempty"`    // python, node, go, java, etc.
+	Env                map[string]string `json:"env,omitempty"`        // Environment variables
+	RegistrySecretName string            `json:"registry_secret_name"` // Kubernetes secret for registry auth
+	TimeoutSeconds     int32             `json:"timeout_seconds,omitempty"`
 }
 
-type Builder struct {
-	workDir  string
-	registry string
+// Status represents the current state of a build
+type Status struct {
+	BuildID  string `json:"build_id"`
+	Event    string `json:"event"` // started, building, complete, failed
+	Message  string `json:"message,omitempty"`
+	Strategy string `json:"strategy,omitempty"` // cnb (Cloud Native Buildpacks)
+	ImageRef string `json:"image_ref,omitempty"`
+	Digest   string `json:"digest,omitempty"` // Image SHA256 digest
 }
 
-func NewBuilder() *Builder {
-	return &Builder{
-		workDir:  "/tmp/builds",
-		registry: os.Getenv("REGISTRY_URL"), // e.g., "registry.eventflow.local:5000"
-	}
-}
+// ============================================================================
+// Configuration Constants
+// ============================================================================
 
-func (b *Builder) Build(ctx context.Context, req BuildRequest) (string, error) {
-	buildID := uuid.New().String()[:8]
-	buildDir := filepath.Join(b.workDir, buildID)
+const (
+	// Environment variable names for configuration
+	nsEnv             = "NAMESPACE"       // Kubernetes namespace
+	builderSAEnv      = "BUILDER_SA"      // Service account for build Jobs
+	kanikoImageEnv    = "KANIKO_IMAGE"    // Kaniko executor image (unused in CNB mode)
+	packImageEnv      = "PACK_IMAGE"      // Pack CLI image (unused, using docker:cli)
+	builderImageEnv   = "BUILDER_IMAGE"   // CNB builder image
+	registrySecretEnv = "REGISTRY_SECRET" // Registry credentials secret
 
-	// Create build directory
-	if err := os.MkdirAll(buildDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create build directory: %w", err)
-	}
-	defer os.RemoveAll(buildDir)
+	// Build strategy
+	strategyCloudNativeBuildpacks = "cnb"
 
-	// Decode source code
-	sourceCode, err := base64.StdEncoding.DecodeString(req.SourceCode)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode source code: %w", err)
-	}
+	// Default values
+	defaultNATSURL        = "nats://nats.eventflow.svc.cluster.local:4222"
+	defaultBuilderSA      = "builder"
+	defaultRegistrySecret = "registry-secret"
+	defaultCNBBuilder     = "paketobuildpacks/builder-jammy-base:latest"
 
-	// Generate Dockerfile based on runtime
-	dockerfile, err := b.generateDockerfile(req.Runtime, string(sourceCode))
-	if err != nil {
-		return "", fmt.Errorf("failed to generate Dockerfile: %w", err)
-	}
+	// Job configuration
+	jobTTLSeconds       = 600 // Clean up completed jobs after 10 minutes
+	jobBackoffLimit     = 0   // Don't retry failed builds
+	buildTimeout        = 10 * time.Minute
+	statusCheckInterval = 5 * time.Second
+)
 
-	// Write Dockerfile
-	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return "", fmt.Errorf("failed to write Dockerfile: %w", err)
-	}
-
-	// Write source code
-	sourceFile := b.getSourceFileName(req.Runtime)
-	if err := os.WriteFile(filepath.Join(buildDir, sourceFile), sourceCode, 0644); err != nil {
-		return "", fmt.Errorf("failed to write source file: %w", err)
-	}
-
-	// Generate image tag
-	imageTag := fmt.Sprintf("%s/%s-%s:%s", b.registry, req.Namespace, req.FunctionName, buildID)
-
-	// Build image
-	log.Printf("Building image: %s", imageTag)
-	cmd := exec.CommandContext(ctx, "docker", "build", "-t", imageTag, buildDir)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to build image: %w", err)
-	}
-
-	// Push to registry
-	log.Printf("Pushing image: %s", imageTag)
-	cmd = exec.CommandContext(ctx, "docker", "push", imageTag)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to push image: %w", err)
-	}
-
-	log.Printf("✅ Successfully built and pushed: %s", imageTag)
-	return imageTag, nil
-}
-
-func (b *Builder) generateDockerfile(runtime, sourceCode string) (string, error) {
-	switch runtime {
-	case "python":
-		return b.generatePythonDockerfile(sourceCode), nil
-	case "nodejs":
-		return b.generateNodeJSDockerfile(sourceCode), nil
-	case "go":
-		return b.generateGoDockerfile(sourceCode), nil
-	default:
-		return "", fmt.Errorf("unsupported runtime: %s", runtime)
-	}
-}
-
-func (b *Builder) generatePythonDockerfile(sourceCode string) string {
-	// Detect if requirements.txt is needed
-	hasRequirements := strings.Contains(sourceCode, "import") &&
-		(strings.Contains(sourceCode, "requests") ||
-			strings.Contains(sourceCode, "flask") ||
-			strings.Contains(sourceCode, "fastapi"))
-
-	dockerfile := `FROM python:3.11-slim
-
-WORKDIR /app
-
-`
-	if hasRequirements {
-		dockerfile += `# Install common dependencies
-RUN pip install --no-cache-dir flask requests
-
-`
-	}
-
-	dockerfile += `COPY handler.py .
-
-ENV PORT=8080
-EXPOSE 8080
-
-CMD ["python", "handler.py"]
-`
-	return dockerfile
-}
-
-func (b *Builder) generateNodeJSDockerfile(sourceCode string) string {
-	// Detect if package.json is needed
-	hasPackages := strings.Contains(sourceCode, "require(") || strings.Contains(sourceCode, "import ")
-
-	dockerfile := `FROM node:18-alpine
-
-WORKDIR /app
-
-`
-	if hasPackages {
-		dockerfile += `# Install common dependencies
-RUN npm install express body-parser
-
-`
-	}
-
-	dockerfile += `COPY handler.js .
-
-ENV PORT=8080
-EXPOSE 8080
-
-CMD ["node", "handler.js"]
-`
-	return dockerfile
-}
-
-func (b *Builder) generateGoDockerfile(sourceCode string) string {
-	return `FROM golang:1.22-alpine AS builder
-
-WORKDIR /app
-
-COPY handler.go .
-
-RUN go mod init function && \
-    go mod tidy && \
-    CGO_ENABLED=0 go build -o handler handler.go
-
-FROM alpine:latest
-
-WORKDIR /app
-COPY --from=builder /app/handler .
-
-ENV PORT=8080
-EXPOSE 8080
-
-CMD ["./handler"]
-`
-}
-
-func (b *Builder) getSourceFileName(runtime string) string {
-	switch runtime {
-	case "python":
-		return "handler.py"
-	case "nodejs":
-		return "handler.js"
-	case "go":
-		return "handler.go"
-	default:
-		return "handler"
-	}
-}
+// ============================================================================
+// Main Application Entry Point
+// ============================================================================
 
 func main() {
-	log.Println("Function Builder Service started")
+	namespace := mustEnv(nsEnv)
+	log.Printf("Builder worker starting in namespace: %s", namespace)
 
-	// This will be integrated with the API
-	// For now, it's a standalone service that listens for build requests
-	// via message queue or HTTP API
-
-	builder := NewBuilder()
-
-	// Example usage:
-	ctx := context.Background()
-	req := BuildRequest{
-		FunctionName: "hello-python",
-		Runtime:      "python",
-		SourceCode: base64.StdEncoding.EncodeToString([]byte(`
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers['Content-Length'])
-        body = self.rfile.read(content_length)
-        
-        # Process the request
-        response = {"message": "Hello from Python!", "received": body.decode()}
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(response).encode())
-
-if __name__ == '__main__':
-    server = HTTPServer(('0.0.0.0', 8080), Handler)
-    print('Function listening on port 8080')
-    server.serve_forever()
-`)),
-		UserID:    "alice",
-		Namespace: "tenant-alice",
-		Registry:  "localhost:5000",
-	}
-
-	image, err := builder.Build(ctx, req)
+	// Connect to NATS messaging system
+	natsURL := getEnvOrDefault("NATS_URL", defaultNATSURL)
+	nc, err := nats.Connect(natsURL)
 	if err != nil {
-		log.Fatalf("Build failed: %v", err)
+		log.Fatalf("Failed to connect to NATS at %s: %v", natsURL, err)
+	}
+	defer nc.Close()
+
+	// Subscribe to build requests
+	_, err = nc.Subscribe("eventflow.events", func(msg *nats.Msg) {
+		handleBuildRequest(nc, msg.Data)
+	})
+	if err != nil {
+		log.Fatalf("Failed to subscribe to events: %v", err)
 	}
 
-	log.Printf("Built image: %s", image)
+	log.Println("Worker listening on eventflow.events")
+	select {} // Block forever
+}
+
+// handleBuildRequest processes incoming build request messages
+func handleBuildRequest(nc *nats.Conn, data []byte) {
+	var req BuildReq
+	if err := json.Unmarshal(data, &req); err != nil {
+		log.Printf("Failed to unmarshal build request: %v", err)
+		return
+	}
+
+	log.Printf("Received build request for %s (source: %s, runtime: %s)",
+		req.BuildID, req.SourceType, req.Runtime)
+
+	if err := processBuild(nc, req); err != nil {
+		log.Printf("Build failed for %s: %v", req.BuildID, err)
+		publishStatus(nc, req.BuildID, "failed", err.Error(), "", "", "")
+	}
+}
+
+// ============================================================================
+// Build Processing
+// ============================================================================
+
+// processBuild handles the complete build lifecycle
+func processBuild(nc *nats.Conn, req BuildReq) error {
+	ctx := context.Background()
+	clientset, namespace := getKubernetesClient()
+
+	// Determine build strategy (always CNB for now)
+	strategy := strategyCloudNativeBuildpacks
+	log.Printf("Using build strategy: %s", strategy)
+	publishStatus(nc, req.BuildID, "started",
+		fmt.Sprintf("Starting build with %s", strategy), strategy, "", "")
+
+	// Create Kubernetes Job for the build
+	job := createBuildJob(namespace, req, strategy)
+	created, err := clientset.BatchV1().Jobs(namespace).Create(ctx, job, meta.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create build job: %w", err)
+	}
+
+	log.Printf("Created build job: %s", created.Name)
+	publishStatus(nc, req.BuildID, "building",
+		"Build job created, building image...", strategy, req.ImageRef, "")
+
+	// Wait for build completion
+	if err := waitForJobCompletion(ctx, clientset, namespace, created.Name, buildTimeout); err != nil {
+		return fmt.Errorf("build job failed: %w", err)
+	}
+
+	publishStatus(nc, req.BuildID, "complete", "Build succeeded",
+		strategy, req.ImageRef, "sha256:placeholder")
+	return nil
+}
+
+// ============================================================================
+// Kubernetes Job Creation
+// ============================================================================
+
+// createBuildJob creates a Kubernetes Job spec for building a container image
+func createBuildJob(namespace string, req BuildReq, strategy string) *batchv1.Job {
+	ttl := int32(jobTTLSeconds)
+	backoff := int32(jobBackoffLimit)
+	jobName := fmt.Sprintf("build-%s", req.BuildID[:8])
+
+	// Get registry secret name (for pushing images)
+	registrySecret := req.RegistrySecretName
+	if registrySecret == "" {
+		registrySecret = getEnvOrDefault(registrySecretEnv, defaultRegistrySecret)
+	}
+
+	// Get service account for the Job pods
+	builderSA := getEnvOrDefault(builderSAEnv, defaultBuilderSA)
+
+	job := &batchv1.Job{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      jobName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app":      "builder",
+				"build-id": req.BuildID,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: &ttl,
+			BackoffLimit:            &backoff,
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: builderSA,
+					RestartPolicy:      corev1.RestartPolicyNever,
+					InitContainers:     []corev1.Container{},
+					Containers:         []corev1.Container{},
+					Volumes: []corev1.Volume{
+						{
+							Name: "workspace",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "docker-config",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: registrySecret,
+									Items: []corev1.KeyToPath{
+										{Key: ".dockerconfigjson", Path: "config.json"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Add fetch init container
+	job.Spec.Template.Spec.InitContainers = append(
+		job.Spec.Template.Spec.InitContainers,
+		fetchContainer(req),
+	)
+
+	// Always use Cloud Native Buildpacks with DinD
+	// Add DinD sidecar
+	job.Spec.Template.Spec.Containers = append(
+		job.Spec.Template.Spec.Containers,
+		dindContainer(),
+	)
+	// Add Pack container
+	job.Spec.Template.Spec.Containers = append(
+		job.Spec.Template.Spec.Containers,
+		cnbContainer(req),
+	)
+
+	return job
+}
+
+// ============================================================================
+// Container Definitions (Init and Main Containers)
+// ============================================================================
+
+// fetchContainer creates an init container that fetches source code
+// Supports three source types: git (clone repo), tar (download/extract), code (inline)
+func fetchContainer(req BuildReq) corev1.Container {
+	container := corev1.Container{
+		Name:  "fetch",
+		Image: "alpine/git:latest",
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "workspace", MountPath: "/workspace"},
+		},
+	}
+
+	switch req.SourceType {
+	case "git":
+		// Clone a Git repository
+		gitRef := req.GitRef
+		if gitRef == "" {
+			gitRef = "main"
+		}
+		container.Command = []string{"sh", "-c"}
+		container.Args = []string{
+			fmt.Sprintf("git clone --depth 1 --branch %s %s /workspace", gitRef, req.Source),
+		}
+
+	case "tar":
+		// Download and extract a tarball
+		container.Image = "busybox:latest"
+		container.Command = []string{"sh", "-c"}
+		container.Args = []string{
+			fmt.Sprintf("wget -O /tmp/source.tar.gz %s && tar -xzf /tmp/source.tar.gz -C /workspace", req.Source),
+		}
+
+	case "code":
+		// Write inline code to a file (for code editor deployments)
+		container.Image = "busybox:latest"
+		container.Command = []string{"sh", "-c"}
+		container.Args = []string{
+			fmt.Sprintf("mkdir -p /workspace && cat > /workspace/main.py << 'EOFCODE'\n%s\nEOFCODE", req.Source),
+		}
+	}
+
+	return container
+}
+
+// cnbContainer creates the main container that runs Cloud Native Buildpacks
+// Uses docker:cli image with pack CLI downloaded at runtime
+func cnbContainer(req BuildReq) corev1.Container {
+	// Select appropriate CNB builder based on runtime
+	builderImage := getEnvOrDefault(builderImageEnv, defaultCNBBuilder)
+
+	if req.Runtime != "" {
+		switch req.Runtime {
+		case "python", "python3":
+			builderImage = "paketobuildpacks/builder-jammy-base:latest"
+		case "node", "nodejs":
+			builderImage = "paketobuildpacks/builder-jammy-base:latest"
+		case "go":
+			builderImage = "paketobuildpacks/builder-jammy-tiny:latest"
+		case "java":
+			builderImage = "paketobuildpacks/builder-jammy-base:latest"
+		}
+	}
+
+	return corev1.Container{
+		Name:    "pack",
+		Image:   "docker:27-cli",
+		Command: []string{"/bin/sh", "-c"},
+		Args: []string{
+			`
+			set -e
+			
+			echo "Waiting for Docker daemon..."
+			until docker -H tcp://localhost:2375 info > /dev/null 2>&1; do
+				sleep 2
+			done
+			echo "Docker daemon is ready!"
+			
+			# Download pack CLI
+			echo "Downloading pack CLI..."
+			wget -q -O - https://github.com/buildpacks/pack/releases/download/v0.35.1/pack-v0.35.1-linux.tgz | tar -xz -C /usr/local/bin
+			chmod +x /usr/local/bin/pack
+			
+			# Run pack build
+			echo "Running pack build..."
+			pack build ` + req.ImageRef + ` \
+				--path /workspace \
+				--builder ` + builderImage + ` \
+				--publish \
+				--docker-host tcp://localhost:2375 \
+				--trust-builder
+			
+			echo "Build complete!"
+			`,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "workspace", MountPath: "/workspace"},
+		},
+		Env: []corev1.EnvVar{
+			{Name: "DOCKER_HOST", Value: "tcp://localhost:2375"},
+		},
+	}
+}
+
+// dindContainer creates a Docker-in-Docker sidecar container
+// Provides a Docker daemon that the pack container can use for building images
+func dindContainer() corev1.Container {
+	return corev1.Container{
+		Name:  "dind",
+		Image: "docker:24-dind",
+		Env: []corev1.EnvVar{
+			{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local communication
+		},
+		SecurityContext: &corev1.SecurityContext{
+			Privileged: boolPtr(true), // Required for DinD to manage containers
+		},
+		Args: []string{
+			"--insecure-registry=docker-registry.eventflow.svc.cluster.local:5000",
+		},
+	}
+}
+
+// ============================================================================
+// Job Monitoring
+// ============================================================================
+
+// waitForJobCompletion waits for a Kubernetes Job to complete or fail
+func waitForJobCompletion(ctx context.Context, clientset *kubernetes.Clientset, namespace, jobName string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(statusCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for job to complete")
+		case <-ticker.C:
+			job, err := clientset.BatchV1().Jobs(namespace).Get(ctx, jobName, meta.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get job status: %w", err)
+			}
+
+			if job.Status.Succeeded > 0 {
+				log.Printf("Job %s completed successfully", jobName)
+				return nil
+			}
+
+			if job.Status.Failed > 0 {
+				return fmt.Errorf("job %s failed", jobName)
+			}
+		}
+	}
+}
+
+// ============================================================================
+// NATS Event Publishing
+// ============================================================================
+
+// publishStatus sends a build status update to NATS
+func publishStatus(nc *nats.Conn, buildID, event, message, strategy, imageRef, digest string) {
+	status := Status{
+		BuildID:  buildID,
+		Event:    event,
+		Message:  message,
+		Strategy: strategy,
+		ImageRef: imageRef,
+		Digest:   digest,
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		log.Printf("Failed to marshal status: %v", err)
+		return
+	}
+
+	subject := fmt.Sprintf("builds.status.%s", buildID)
+	if err := nc.Publish(subject, data); err != nil {
+		log.Printf("Failed to publish status to %s: %v", subject, err)
+	}
+}
+
+// ============================================================================
+// Kubernetes Client Management
+// ============================================================================
+
+// getKubernetesClient creates a Kubernetes client and returns it with the namespace
+func getKubernetesClient() (*kubernetes.Clientset, string) {
+	// Try in-cluster config first
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		// Fallback to kubeconfig for local development
+		kubeconfigPath := os.Getenv("KUBECONFIG")
+		if kubeconfigPath == "" {
+			kubeconfigPath = os.Getenv("HOME") + "/.kube/config"
+		}
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			log.Fatalf("Failed to get Kubernetes config: %v", err)
+		}
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Fatalf("Failed to create Kubernetes client: %v", err)
+	}
+
+	namespace := mustEnv(nsEnv)
+	return clientset, namespace
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// getEnvOrDefault returns the value of an environment variable or a default value
+func getEnvOrDefault(key, defaultValue string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultValue
+}
+
+// mustEnv returns the value of an environment variable or panics if not set
+func mustEnv(key string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		log.Fatalf("Required environment variable not set: %s", key)
+	}
+	return val
+}
+
+// boolPtr returns a pointer to a boolean value (helper for Kubernetes API)
+func boolPtr(b bool) *bool {
+	return &b
 }
